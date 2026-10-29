@@ -28,8 +28,8 @@ CAT_COLS = ["workclass","education","marital-status","occupation",
 NUM_COLS = ["age","fnlwgt","education-num","capital-gain","capital-loss","hours-per-week"]
 
 def build_prep(X):
-    cat = [c for c in CAT_COLS if c in X.columns]
-    num = [c for c in NUM_COLS if c in X.columns]
+    cat = [c for c in X.columns if X[c].dtype == "object" or X[c].dtype.name == "category"]
+    num = [c for c in X.columns if c not in cat]
     t = []
     if cat: t.append(("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat))
     if num: t.append(("num", StandardScaler(), num))
@@ -43,7 +43,7 @@ def save_model(name, model, prep, X_tr, y_tr):
     joblib.dump((model, prep), path)
     print(f"  Saved -> {path}")
 
-print("Loading data...")
+print("Loading Adult Census data...")
 X, y, sens = load(n_sample=20000)
 X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
@@ -55,13 +55,33 @@ MODELS = {
     "linear_svc_calibrated": CalibratedClassifierCV(LinearSVC(max_iter=2000, random_state=42), cv=3),
 }
 
-print(f"Training & saving {len(MODELS)} models to input/ ...")
+print(f"Training & saving {len(MODELS)} Adult models to input/ ...")
 for name, clf in MODELS.items():
     print(f"  [{name}]")
     prep = build_prep(X_tr)
     save_model(name, clf, prep, X_tr, y_tr)
 
+# Also generate German Credit sample models
+try:
+    from src.german_credit import load_german_credit
+    print("\nLoading German Credit data...")
+    X_gc, y_gc, _ = load_german_credit()
+    X_gc_tr, _, y_gc_tr, _ = train_test_split(X_gc, y_gc, test_size=0.2, random_state=42, stratify=y_gc)
+    
+    gc_models = {
+        "german_credit_random_forest": RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42),
+        "german_credit_logistic_regression": LogisticRegression(max_iter=500, random_state=42),
+    }
+    print(f"Training & saving {len(gc_models)} German Credit models to input/ ...")
+    for name, clf in gc_models.items():
+        print(f"  [{name}]")
+        prep = build_prep(X_gc_tr)
+        save_model(name, clf, prep, X_gc_tr, y_gc_tr)
+except Exception as e:
+    print(f"German credit model generation skipped: {e}")
+
 print("\nDone! Files in input/:")
 for f in sorted(os.listdir(INPUT_DIR)):
     size = os.path.getsize(os.path.join(INPUT_DIR, f))
     print(f"  {f:45s}  {size/1024:.1f} KB")
+

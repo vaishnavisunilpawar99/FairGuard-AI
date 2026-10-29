@@ -1,5 +1,5 @@
 # FairGuard AI — Model Card
-*Generated: 2026-10-26 | Standard: Mitchell et al. (2019) Model Cards*
+*Generated: 2026-10-28 | Standard: Mitchell et al. (2019) Model Cards*
 
 ---
 
@@ -34,9 +34,9 @@
 
 | Metric | Model A | Model B |
 |--------|---------|---------|
-| Accuracy | 0.861 | 0.8333 |
-| AUC-ROC | 0.9223 | 0.7317 |
-| F1 Score | 0.6982 | 0.607 |
+| Accuracy | 0.84 | 0.785 |
+| AUC-ROC | 0.8921 | 0.9156 |
+| F1 Score | 0.6863 | 0.6767 |
 
 ---
 
@@ -55,33 +55,58 @@
 
 | Metric | Model A | Status A | Model B | Status B |
 |--------|---------|----------|---------|----------|
-| Demographic Parity Diff | 0.1851 | Warning | 0.0153 | Pass |
-| Equalized Odds Diff | 0.11 | Warning | 0.3986 | Fail |
-| Disparate Impact | 0.3299 | Fail | 0.9173 | Pass |
-| Error Rate Disparity | 0.1132 | Warning | 0.1066 | Warning |
+| Demographic Parity Diff | 0.2254 | Fail | 0.4012 | Fail |
+| Equalized Odds Diff | 0.2434 | Fail | 0.6337 | Fail |
+| Disparate Impact | 0.3038 | Fail | 0.2463 | Fail |
+| Error Rate Disparity | 0.1123 | Warning | 0.1442 | Warning |
 
 ### Privacy Risk (Model A)
 
 | Indicator | Value |
 |-----------|-------|
 | Min k-Anonymity (k) | 1 |
-| Rows with k < 5 | 59.15% |
-| MIA Train/Test AUC Gap | 0.0231 |
-| Membership Inference Risk | **Low** |
+| Rows with k < 5 | 100.0% |
+| MIA Train/Test AUC Gap | 0.1079 |
+| Membership Inference Risk | **High** |
 
 ### Data Drift
 
 | Indicator | Value |
 |-----------|-------|
-| Share of Drifted Features | 0.14285714285714285 |
+| Share of Drifted Features | 0.1667 |
+
+## 7. Explainability
+
+SHAP global and local explanations are available in the dashboard. Explanations describe model behaviour for individual records and feature groups; they do not describe people or groups.
+
+## 8. Privacy
+
+Privacy indicators include k-anonymity and a membership-inference proxy. These are screening measures and require review before deployment.
+
+## 9. Drift
+
+Evidently compares the training reference data with a shifted test sample. The generated drift report is retained with the artifacts.
+
+## 10. Limitations
+
+- UCI Adult data reflects 1994 US Census income patterns and may not generalise.
+- Metrics depend on the selected sample, threshold, and sensitive attribute.
+
+## 11. Ethical notes
+
+This workbench reports measured model behaviour. It must not be used as the sole basis for decisions about individuals.
+
+## 12. Approval status
+
+Approval is pending until fairness, privacy, drift, legal, and governance checks are reviewed by an assigned reviewer.
 
 ---
 
-## 7. Fairness–Accuracy Trade-off Analysis
+## Fairness–Accuracy Trade-off Analysis
 
 Model B applies the **Exponential Gradient** reduction with a **Demographic Parity** constraint, which directly optimises for equal selection rates across sensitive groups. This typically results in a measurable drop in raw accuracy and AUC compared to the unconstrained Model A, because the model is constrained away from patterns that, while predictive, correlate with protected attributes.
 
-**Why Demographic Parity and Equalized Odds can conflict:** Demographic Parity requires equal *selection rates* (P(ŷ=1 | group)), while Equalized Odds requires equal *true positive rates and false positive rates* across groups. When the *base rates* (P(y=1 | group)) differ between groups — as they do in the UCI Adult dataset across sex and race — it is **mathematically impossible** to satisfy both constraints simultaneously (Chouldechova, 2017; Kleinberg et al., 2016). Enforcing one necessarily violates the other. FairGuard AI reports both metrics to expose this tension explicitly and leave the trade-off decision to human stakeholders.
+**Why Demographic Parity and Equalized Odds can conflict:** Demographic Parity requires equal *selection rates*, while Equalized Odds requires equal *true positive rates and false positive rates*. These objectives can conflict in a classifier, so FairGuard AI reports both measured behaviours and leaves the trade-off decision to human stakeholders.
 
 ---
 

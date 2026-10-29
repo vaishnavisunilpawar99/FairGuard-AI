@@ -1,0 +1,78 @@
+services:
+  # ─── 1. PostgreSQL Database (SRS Section 6.4 & 13) ───────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fairguard_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fairguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fairguard_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-fairguard}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fairguard -d fairguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── 2. MLflow Tracking Server (SRS Section 5.1 & 13) ───────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    container_name: fairguard_mlflow
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///artifacts/mlflow.db
+      --default-artifact-root /app/artifacts/mlruns
+      --host 0.0.0.0
+      --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./artifacts:/app/artifacts
+
+  # ─── 3. FastAPI REST API Backend (SRS Section 8) ─────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: fairguard_backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fairguard}:${POSTGRES_PASSWORD:-fairguard_secret}@postgres:5432/${POSTGRES_DB:-fairguard}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ─── 4. React Dashboard Frontend (Vintage Soul Edition) ────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: fairguard_frontend
+    restart: unless-stopped
+    environment:
+      - API_URL=http://backend:8000
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./input:/app/input
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+    driver: local

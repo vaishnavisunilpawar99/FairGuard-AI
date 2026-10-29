@@ -2,8 +2,10 @@ import os
 import pandas as pd
 import numpy as np
 from sklearn.datasets import fetch_openml
+from . import german_credit
 
-DATA_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "adult_income.csv")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+DATA_PATH = os.path.join(DATA_DIR, "adult_income.csv")
 SENSITIVE_COLS = ["sex", "race", "age_bin"]
 CAT_COLS = [
     "workclass", "education", "marital-status", "occupation",
@@ -16,7 +18,23 @@ def _bin_age(age: pd.Series) -> pd.Series:
     return pd.cut(age, bins=[0, 30, 50, 100], labels=["<30", "30-50", ">50"])
 
 
-def load(n_sample: int = 20000, random_state: int = 42):
+def load(dataset_name: str = "adult", n_sample: int = 20000, random_state: int = 42):
+    """Load dataset by name: 'adult', 'german', 'synthetic_biased', 'synthetic_shifted', or 'synthetic_pii'."""
+    if dataset_name.lower() in ["german", "german_credit"]:
+        return german_credit.load_german_credit()
+
+    if dataset_name.startswith("synthetic_"):
+        file_path = os.path.join(DATA_DIR, f"{dataset_name}.csv")
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path)
+            target_col = [c for c in ["target", "income", "credit_risk"] if c in df.columns][0]
+            sens_col = [c for c in ["group", "sex", "age"] if c in df.columns][0]
+            y = df[target_col].astype(int)
+            sens = df[[sens_col]].copy()
+            X = df.drop(columns=[target_col, sens_col], errors="ignore")
+            return X, y, sens
+
+    # Default: UCI Adult Income
     if os.getenv("FAIRGUARD_SAMPLE"):
         n_sample = min(n_sample, 1000)
     if os.path.exists(DATA_PATH):

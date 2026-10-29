@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
+from .services.privacy_service import detect_pii_columns, comprehensive_privacy_audit
 
 
 def k_anonymity(df: pd.DataFrame, quasi: list = None) -> dict:
@@ -19,7 +20,7 @@ def k_anonymity(df: pd.DataFrame, quasi: list = None) -> dict:
     grp = sub.groupby(cols).size().reset_index(name="count")
     merged = sub.merge(grp, on=cols, how="left")
     counts = merged["count"].values
-    min_k = int(counts.min())
+    min_k = int(counts.min()) if len(counts) > 0 else 0
     pct_lt5 = round(float((counts < 5).mean()) * 100, 2)
     unique_pct = round(float((counts == 1).mean()) * 100, 2)
     return {"min_k": min_k, "pct_rows_k_lt_5": pct_lt5,

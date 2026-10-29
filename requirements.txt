@@ -11,3 +11,9 @@ numpy>=1.26.0
 markdown>=3.6
 scipy>=1.12.0
 ucimlrepo
+fastapi>=0.110.0
+uvicorn>=0.29.0
+pydantic>=2.6.0
+sqlalchemy>=2.0.0
+requests>=2.31.0
+psycopg2-binary>=2.9.9

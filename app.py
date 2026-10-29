@@ -15,8 +15,12 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 
+import requests
 from src import (data_loader, models, fairness_engine,
                  xai_engine, drift_engine, privacy_engine, model_card, governance)
+from src.services import drift_service, privacy_service, risk_service
+from src.database import crud
+
 
 st.set_page_config(
     page_title="FairGuard AI",
@@ -79,41 +83,47 @@ def _color_delta(v):
         pass
     return ""
 
-# ─── cached data & training ───────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading & training (first run ~90s)…")
-def load_and_train():
-    X, y, sens = data_loader.load()
-    Xtr, Xte, ytr, yte, str_, ste = train_test_split(
-        X, y, sens, test_size=0.2, random_state=42, stratify=y)
-    trained = models.train_all(Xtr, ytr, str_)
-    res = {}
-    for n, m in trained.items():
-        p, pr = models.predict(m, Xte)
-        res[n] = {"model": m, "preds": p, "proba": pr,
-                  "metrics": models.metrics(yte, p, pr), "label": n}
-    profile = data_loader.profile(X, y, sens)
-    return Xtr, Xte, ytr, yte, str_, ste, res, profile
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
-@st.cache_resource(show_spinner="Running drift & privacy…")
-def run_drift_privacy(Xtr, Xte, ste, _model_A, ytr, yte):
-    ref = Xtr.copy()
-    cur = drift_engine.make_shifted(Xte.copy())
-    dr  = drift_engine.drift(ref, cur)
-    comb = pd.concat([Xte.reset_index(drop=True), ste.reset_index(drop=True)], axis=1)
-    ka   = privacy_engine.k_anonymity(comb)
-    mia  = privacy_engine.mia_proxy(_model_A, Xtr, ytr, Xte, yte)
-    return dr, ka, mia
 
-Xtr, Xte, ytr, yte, str_, ste, results, profile = load_and_train()
+def check_backend_api():
+    try:
+        r = requests.get(f"{API_URL}/health", timeout=1.0)
+        return r.status_code == 200, r.json()
+    except Exception:
+        return False, {}
 
-# ─── sidebar: load / upload Model C ──────────────────────────────────────────
+
+# ─── sidebar: datasets & models ───────────────────────────────────────────────
 INPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "input")
 
 with st.sidebar:
     st.markdown("## ⚖️ FairGuard AI")
     st.caption("Responsible AI Assessment Workbench")
-    st.markdown("---")
 
+    api_online, health_data = check_backend_api()
+    if api_online:
+        st.success("🟢 FastAPI Backend Active")
+    else:
+        st.caption("⚪ Standalone Local Engine")
+
+    st.markdown("---")
+    st.subheader("📊 Evaluation Dataset")
+    ds_options = {
+        "adult": "UCI Adult Income (Primary)",
+        "german": "German Credit (Secondary)",
+        "synthetic_biased": "Synthetic — Imbalanced Bias",
+        "synthetic_shifted": "Synthetic — Feature Drift",
+        "synthetic_pii": "Synthetic — PII Injection",
+    }
+    sel_dataset = st.selectbox(
+        "Select dataset to audit:",
+        list(ds_options.keys()),
+        format_func=lambda k: ds_options[k],
+        key="sel_dataset"
+    )
+
+    st.markdown("---")
     st.subheader("📂 Pre-Built Input Models")
     input_files = (sorted(f for f in os.listdir(INPUT_DIR) if f.endswith(".joblib"))
                    if os.path.isdir(INPUT_DIR) else [])
@@ -129,6 +139,38 @@ with st.sidebar:
     st.caption("**A** HistGradientBoosting (unmitigated)  \n"
                "**B** ExponentiatedGradient (DemographicParity)  \n"
                "**C** Your uploaded / selected model")
+
+
+# ─── cached data & training ───────────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading dataset & evaluating models…")
+def load_and_train(dataset_name="adult"):
+    X, y, sens = data_loader.load(dataset_name=dataset_name)
+    Xtr, Xte, ytr, yte, str_, ste = train_test_split(
+        X, y, sens, test_size=0.2, random_state=42, stratify=y)
+    trained = models.train_all(Xtr, ytr, str_)
+    res = {}
+    for n, m in trained.items():
+        p, pr = models.predict(m, Xte)
+        res[n] = {"model": m, "preds": p, "proba": pr,
+                  "metrics": models.metrics(yte, p, pr), "label": n}
+    profile = data_loader.profile(X, y, sens)
+    return Xtr, Xte, ytr, yte, str_, ste, res, profile
+
+
+@st.cache_resource(show_spinner="Running drift & privacy…")
+def run_drift_privacy(Xtr, Xte, ste, _model_A, ytr, yte):
+    ref = Xtr.copy()
+    cur = drift_engine.make_shifted(Xte.copy())
+    dr  = drift_engine.drift(ref, cur)
+    comb = pd.concat([Xte.reset_index(drop=True), ste.reset_index(drop=True)], axis=1)
+    ka   = privacy_engine.k_anonymity(comb)
+    mia  = privacy_engine.mia_proxy(_model_A, Xtr, ytr, Xte, yte)
+    return dr, ka, mia
+
+
+Xtr, Xte, ytr, yte, str_, ste, results, profile = load_and_train(dataset_name=sel_dataset)
+ATTRS = list(ste.columns)
+
 
 # ─── resolve Model C ─────────────────────────────────────────────────────────
 model_c_tuple = None
@@ -195,9 +237,61 @@ def mdl_label(k):
 def default_idx(keys):
     return keys.index("C") if has_C and "C" in keys else 0
 
-# ─── page title ──────────────────────────────────────────────────────────────
+# ─── page title & executive scorecard ───────────────────────────────────────
 c_badge = f"  |  Model C: {results['C']['label']}" if has_C else ""
 st.title(f"⚖️ FairGuard AI{c_badge}")
+
+# Compute multi-pillar risk for active model
+eval_model_key = "C" if has_C else "A"
+eval_attr = ATTRS[0] if ATTRS else "sex"
+fa_eval = fairness_engine.audit(yte, results[eval_model_key]["preds"], ste[eval_attr])
+dr_eval, ka_eval, mia_eval = run_drift_privacy(Xtr, Xte, ste, results[eval_model_key]["model"], ytr, yte)
+priv_eval = {
+    "k_anonymity": ka_eval,
+    "membership_inference": mia_eval,
+    "privacy_risk_score": 0.7 if mia_eval.get("risk") == "High" else (0.35 if mia_eval.get("risk") == "Medium" else 0.1)
+}
+overall_risk = risk_service.calculate_overall_risk(
+    fairness=fa_eval,
+    privacy=priv_eval,
+    drift=dr_eval,
+    performance=results[eval_model_key]["metrics"],
+    explainability={"proxy_warning_flag": False}
+)
+recommendations = risk_service.generate_recommendations(
+    fairness=fa_eval,
+    privacy=priv_eval,
+    drift=dr_eval,
+    performance=results[eval_model_key]["metrics"],
+    explainability={"proxy_warning_flag": False}
+)
+
+# Executive Risk & Trustworthiness Banner
+risk_lvl = overall_risk["overall_risk_level"]
+risk_badge = {"Low": "🟢 Low Risk", "Medium": "🟡 Medium Risk", "High": "🔴 High Risk"}.get(risk_lvl, risk_lvl)
+risk_color = {"Low": "#22c55e", "Medium": "#eab308", "High": "#ef4444"}.get(risk_lvl, "#3b82f6")
+
+with st.container():
+    st.markdown(
+        f"""
+        <div style="background: {risk_color}12; border-left: 5px solid {risk_color}; padding: 12px 18px; border-radius: 6px; margin-bottom: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 17px; font-weight: 600; color: {risk_color};">
+                    Trustworthiness Status: {risk_badge} (Score: {overall_risk['overall_risk_score']:.4f})
+                </span>
+                <span style="font-size: 13px; color: #6b7280;">
+                    Model Under Audit: <strong>{mdl_label(eval_model_key)}</strong> | Dataset: <strong>{sel_dataset}</strong>
+                </span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.expander(f"💡 Actionable Recommendations ({len(recommendations)} active items)", expanded=False):
+        for rec in recommendations:
+            sev_icon = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(rec.get("severity"), "⚪")
+            st.markdown(f"- **{sev_icon} [{rec.get('module')}]** {rec.get('text')}")
 
 if has_C:
     st.info(f"Model C **({results['C']['label']})** is active — "
@@ -206,6 +300,7 @@ if has_C:
 tabs = st.tabs(["📊 Data Explorer", "📈 Model Comparison",
                 "⚖️ Fairness Audit", "🔍 Explainability",
                 "🌊 Drift & Privacy", "📋 Governance", "✅ Review"])
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — DATA EXPLORER
@@ -695,5 +790,23 @@ with tabs[6]:
     approve = st.button("Approve model", disabled=not approval_ok, key="approve_model")
     if approve:
         governance.save_decision(mdl_label(review_model), "Approved", reviewer, reason)
-        st.success("Approval decision saved.")
+        if api_online:
+            try:
+                requests.post(
+                    f"{API_URL}/assessments/default_assessment/review",
+                    json={"reviewer": reviewer, "decision": "Approved", "comment": reason},
+                    timeout=2.0
+                )
+            except Exception:
+                pass
+        st.success("Approval decision saved to relational database and audit logs.")
+
     st.caption(f"Current decision status: {governance.latest_status()}")
+
+    # Display audit trail of reviews
+    past_reviews = crud.get_reviews("default_assessment")
+    if past_reviews:
+        st.subheader("Auditor Sign-Off History")
+        rev_df = pd.DataFrame(past_reviews)[["reviewer", "decision", "comment", "reviewed_at"]]
+        st.dataframe(rev_df, use_container_width=True)
+

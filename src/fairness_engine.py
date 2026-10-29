@@ -3,8 +3,12 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from fairlearn.metrics import MetricFrame, selection_rate, false_positive_rate, false_negative_rate, true_positive_rate
 from sklearn.metrics import confusion_matrix
+
+try:
+    from fairlearn.metrics import MetricFrame, selection_rate, false_positive_rate, false_negative_rate, true_positive_rate
+except ImportError:
+    MetricFrame = None
 
 
 def _fdr(y_true, y_pred):
@@ -21,25 +25,69 @@ def audit(y_true: pd.Series, y_pred: np.ndarray, sens_col: pd.Series) -> dict:
     y_pred = np.array(y_pred)
     sf = np.array(sens_col)
 
-    mf = MetricFrame(
-        metrics={
-            "selection_rate": selection_rate,
-            "TPR": true_positive_rate,
-            "FPR": false_positive_rate,
-            "FNR": false_negative_rate,
-            "FDR": _fdr,
-            "error_rate": _error_rate,
-        },
-        y_true=y_true,
-        y_pred=y_pred,
-        sensitive_features=sf,
-    )
+    if MetricFrame is not None:
+        mf = MetricFrame(
+            metrics={
+                "selection_rate": selection_rate,
+                "TPR": true_positive_rate,
+                "FPR": false_positive_rate,
+                "FNR": false_negative_rate,
+                "FDR": _fdr,
+                "error_rate": _error_rate,
+            },
+            y_true=y_true,
+            y_pred=y_pred,
+            sensitive_features=sf,
+        )
+        by_group = mf.by_group.copy()
+        counts = pd.Series(sf).value_counts().reindex(by_group.index).fillna(0).astype(int)
+        by_group.insert(0, "group_count", counts.values)
+        by_group.insert(1, "small_group", counts.values < 100)
+        overall = mf.overall.to_dict()
+    else:
+        # Pure Python / Scikit-learn fallback (exact mathematical equivalent)
+        groups = np.unique(sf)
+        group_rows = []
+        for g in groups:
+            mask = (sf == g)
+            yt_g = y_true[mask]
+            yp_g = y_pred[mask]
+            g_count = int(np.sum(mask))
+            if g_count == 0:
+                continue
+            
+            sel_rate = float(np.mean(yp_g == 1))
+            cm = confusion_matrix(yt_g, yp_g, labels=[0, 1])
+            tn, fp, fn, tp = cm.ravel()
+            tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+            fnr = fn / (tp + fn) if (tp + fn) > 0 else 0.0
+            fdr = fp / (fp + tp) if (fp + tp) > 0 else 0.0
+            err = float(np.mean(yt_g != yp_g))
 
-    by_group = mf.by_group.copy()
-    counts = pd.Series(sf).value_counts().reindex(by_group.index).fillna(0).astype(int)
-    by_group.insert(0, "group_count", counts.values)
-    by_group.insert(1, "small_group", counts.values < 100)
-    overall = mf.overall.to_dict()
+            group_rows.append({
+                "group": g,
+                "group_count": g_count,
+                "small_group": g_count < 100,
+                "selection_rate": sel_rate,
+                "TPR": tpr,
+                "FPR": fpr,
+                "FNR": fnr,
+                "FDR": fdr,
+                "error_rate": err,
+            })
+        by_group = pd.DataFrame(group_rows).set_index("group")
+        counts = by_group["group_count"]
+        cm_all = confusion_matrix(y_true, y_pred, labels=[0, 1])
+        tn, fp, fn, tp = cm_all.ravel()
+        overall = {
+            "selection_rate": float(np.mean(y_pred == 1)),
+            "TPR": tp / (tp + fn) if (tp + fn) > 0 else 0.0,
+            "FPR": fp / (fp + tn) if (fp + tn) > 0 else 0.0,
+            "FNR": fn / (tp + fn) if (tp + fn) > 0 else 0.0,
+            "FDR": fp / (fp + tp) if (fp + tp) > 0 else 0.0,
+            "error_rate": float(np.mean(y_true != y_pred)),
+        }
 
     sr = by_group["selection_rate"]
     max_sr = sr.max()
@@ -101,43 +149,33 @@ def intersectional(y_true, y_pred, sens_df: pd.DataFrame) -> pd.DataFrame:
     else:
         combo = sens_df.iloc[:, 0].astype(str) + " x " + sens_df.iloc[:, 1].astype(str)
 
-    rows = []
-    for grp in combo.unique():
-        mask = combo == grp
-        if mask.sum() < 20:
-            continue
-        yt = y_true[mask]
-        yp = y_pred[mask]
-        sr = float(yp.mean())
-        tpr = true_positive_rate(yt, yp)
-        fpr = false_positive_rate(yt, yp)
-        er = float(np.mean(yt != yp))
-        rows.append({"group": grp, "n": mask.sum(), "selection_rate": round(sr, 4),
-                     "TPR": round(float(tpr), 4), "FPR": round(float(fpr), 4), "error_rate": round(er, 4)})
-    return pd.DataFrame(rows).set_index("group")
+    res = audit(y_true, y_pred, combo)
+    return res["by_group"]
 
 
-def confusion_by_group(y_true, y_pred, sens_col: pd.Series) -> plt.Figure:
+def confusion_by_group(y_true, y_pred, sens_col: pd.Series):
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
-    groups = sorted(sens_col.unique())
-    n = len(groups)
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
-    if n == 1:
+    sf = np.array(sens_col)
+    groups = pd.Series(sf).value_counts().head(4).index.tolist()
+
+    fig, axes = plt.subplots(1, len(groups), figsize=(3.5 * len(groups), 3))
+    if len(groups) == 1:
         axes = [axes]
-    for ax, grp in zip(axes, groups):
-        mask = sens_col == grp
+
+    for ax, g in zip(axes, groups):
+        mask = (sf == g)
         cm = confusion_matrix(y_true[mask], y_pred[mask], labels=[0, 1])
-        ax.imshow(cm, cmap="Blues")
-        ax.set_title(str(grp), fontsize=10)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("Actual")
-        for i in range(2):
-            for j in range(2):
-                ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=12)
+        im = ax.imshow(cm, cmap="Blues")
+        ax.set_title(f"{g} (n={mask.sum()})", fontsize=9)
         ax.set_xticks([0, 1])
         ax.set_yticks([0, 1])
-        ax.set_xticklabels(["0", "1"])
-        ax.set_yticklabels(["0", "1"])
+        ax.set_xticklabels(["<=50K", ">50K"], fontsize=8)
+        ax.set_yticklabels(["<=50K", ">50K"], fontsize=8)
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, str(cm[i, j]), ha="center", va="center",
+                        color="white" if cm[i, j] > cm.max() / 2 else "black", fontsize=9)
+
     plt.tight_layout()
     return fig

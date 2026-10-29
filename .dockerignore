@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Git & IDE metadata
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary outputs
+scratch/
+artifacts/mlruns/*/
+artifacts/uploaded_models/*

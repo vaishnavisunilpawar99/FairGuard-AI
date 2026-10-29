@@ -1,0 +1,19 @@
+# FairGuard AI - React Frontend Production Container (Vintage Soul Edition)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy the production-built React application
+COPY frontend/dist /app/dist
+
+ENV PYTHONUNBUFFERED=1 \
+    PORT=8501
+
+EXPOSE 8501
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/')" || exit 1
+
+# Serve the static React application
+CMD ["python3", "-m", "http.server", "8501", "--directory", "/app/dist", "--bind", "0.0.0.0"]
